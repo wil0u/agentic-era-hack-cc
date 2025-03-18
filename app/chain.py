@@ -1,3 +1,49 @@
+# Copyright 2024 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+# from langchain_google_vertexai import ChatVertexAI
+# from google.auth import load_credentials_from_file
+# from google.cloud import aiplatform
+# from langchain_core.output_parsers.openai_tools import PydanticToolsParser
+# LOCATION = "europe-west3"
+# LLM = "gemini-1.5-flash-002"
+
+# llm = ChatVertexAI(
+#     model_name=LLM,
+#     location=LOCATION,
+#     temperature=0,
+#     max_output_tokens=1024,
+# )
+
+# template = ChatPromptTemplate.from_messages(
+#     [
+#         (
+#             "system",
+#             "You are a knowledgeable culinary assistant specializing in providing"
+#             "detailed cooking recipes. Your responses should be informative, engaging, "
+#             "and tailored to the user's specific requests. Include ingredients, "
+#             "step-by-step instructions, cooking times, and any helpful tips or "
+#             "variations. If asked about dietary restrictions or substitutions, offer "
+#             "appropriate alternatives.",
+#         ),
+#         MessagesPlaceholder(variable_name="messages"),
+#     ]
+# )
+
+# chain = template | llm
+
 import os
 import warnings
 
@@ -34,19 +80,8 @@ from langchain_core.tools import tool
 # import mlflow
 
 
-# PROJECT_ID = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
-# LOCATION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
-import os
-
-# Récupérer la variable d'environnement
-PROJECT_ID = os.getenv('PROJECT_ID')
-
-# Vérifier si la variable est définie
-if PROJECT_ID is None:
-    print("Error: PROJECT_ID environment variable is not set")
-    exit(1)
-
-print(f"The PROJECT_ID is: {PROJECT_ID}")
+PROJECT_ID = "retd-283409"
+LOCATION = os.environ.get("GOOGLE_CLOUD_REGION", "europe-west1")
 
 def query_result_summary(df):
     def get_info_as_string(df):
@@ -261,14 +296,14 @@ class CampaignWorkflow:
         - When the brief mention a limit or a size of n for the population to be targetted, use LIMIT n and force a randomization by adding an order by clause with rand, like this example
              SELECT
               id AS user_id,
-            FROM `thelook_ecommerce.users`
+            FROM `thelookecommerce.users`
             WHERE gender = 'M'
             ORDER BY RAND()
             LIMIT 100;
     Don't hesitate to use subqueries (fetching data from all the available tables) 
     to ensure the brief and user input are properly respected.
       ### Metadata Structure: 
-        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
+        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelookecommerce".
         - Tables in the dataset are identified by the `table_id` field.
         - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
         The provided schema metadata is as follows:
@@ -525,8 +560,10 @@ metadata = f"{description}"
 
 
 llm = ChatVertexAI(model="gemini-2.0-flash-001", temperature=0)
+#llm = ChatVertexAI(model="gemini-2.0-pro-exp-02-05", temperature=0)
+
 
 
 Campaign_Workflow = CampaignWorkflow(model=llm,project_id=PROJECT_ID,schema_metadata=metadata)
 
-agent = Campaign_Workflow.graph
+chain = Campaign_Workflow.graph
