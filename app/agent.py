@@ -213,7 +213,7 @@ class CampaignWorkflow:
 
     Use the provided table information and schema to ensure the campaign brief is based on real data.
     ### Metadata Structure: 
-    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelookecommerce".
+    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
     - Tables in the dataset are identified by the `table_id` field.
     - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
     The provided schema metadata is as follows:
@@ -398,7 +398,7 @@ class CampaignWorkflow:
         - If incorrect, explain why and provide a clear reasoning.
         - While evaluating, ensure that user_id is correctly retrieved, as it is the primary information we need to extract.
         ### Metadata Structure: 
-        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelookecommerce".
+        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
         - Tables in the dataset are identified by the `table_id` field.
         - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
         The provided schema metadata is as follows:
@@ -446,7 +446,7 @@ class CampaignWorkflow:
     - While adjusting the query, ensure that user_id is correctly retrieved, as it is a must have
     - Include other informations about the users that are relevant based on the context (user input, brief etc.)
     ### Metadata Structure: 
-    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelookecommerce".
+    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
     - Tables in the dataset are identified by the `table_id` field.
     - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
     The provided schema metadata is as follows:

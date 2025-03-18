@@ -65,3 +65,21 @@ def save_chat(st: Any) -> None:
                 encoding="utf-8",
             )
         st.toast(f"Chat saved to path: ↓ {Path(SAVED_CHAT_PATH) / filename}")
+
+def format_intermediate_step(structured_output):
+    """Formate le contenu des intermediate steps avec nom et args bien affichés."""
+    if not isinstance(structured_output, dict):
+        return ""
+
+    name = structured_output.pop("name", None)  # Récupérer et supprimer "name"
+    args = structured_output.get("args", {})  # Récupérer "args" uniquement
+
+    if not isinstance(args, dict):
+        args = {}
+
+    # Formater les args en clés-valeurs avec un léger décalage
+    formatted_args = "\n\n".join([f"**{key}:** {value}" for key, value in args.items()])
+
+    # Construire l'affichage final avec couleur sur le nom
+    formatted_output = f"##### <span style='color:Teal'>{name}</span>\n{formatted_args}" if name else formatted_args
+    return formatted_output

@@ -29,6 +29,8 @@ from frontend.utils.local_chat_history import LocalChatMessageHistory
 from frontend.utils.message_editing import MessageEditing
 from frontend.utils.multimodal_utils import format_content, get_parts_from_files
 from frontend.utils.stream_handler import Client, StreamHandler, get_chain_response
+from frontend.utils.chat_utils import format_intermediate_step
+
 
 USER = "my_user"
 EMPTY_CHAT_NAME = "Empty chat"
@@ -93,11 +95,35 @@ def display_messages() -> None:
             raise ValueError(f"Unexpected message type: {message['type']}")
 
 
-def display_chat_message(message: dict[str, Any], index: int) -> None:
-    """Display a single chat message with edit, refresh, and delete options."""
-    chat_message = st.chat_message(message["type"])
+def display_chat_message(message: dict, index: int) -> None:
+    """Affiche un message de chat avec les intermediate steps inclus dans le message principal."""
+    chat_message_type = message.get("type", "default")
+    chat_message_content = message.get("content", "")
+
+    # Affichage du message principal
+    chat_message = st.chat_message(chat_message_type)
     with chat_message:
-        st.markdown(format_content(message["content"]), unsafe_allow_html=True)
+        # Affichage des intermediate steps s'il y en a
+        if "additional_kwargs" in message:
+            intermediate_steps = message["additional_kwargs"].get("intermediate_steps", [])
+            with st.expander("Intermediate Steps"):
+                nb_steps = len(intermediate_steps)
+                for i, step in enumerate(intermediate_steps):
+                    try:
+                        structured_output = ast.literal_eval(step.get("structured_output", "{}"))
+                    except (SyntaxError, ValueError):
+                        structured_output = {}
+
+                    formatted_output = format_intermediate_step(structured_output)
+                    if formatted_output:
+                        st.markdown(f"###### Step {i+1}")
+                        st.markdown(formatted_output, unsafe_allow_html=True)
+                        if(i != nb_steps-1):
+                            st.divider() 
+
+        # Affichage du message principal après les intermediate steps
+        st.markdown(format_content(chat_message_content), unsafe_allow_html=True)
+        
         col1, col2, col3 = st.columns([2, 2, 94])
         display_message_buttons(message, index, col1, col2, col3)
 
