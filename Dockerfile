@@ -26,4 +26,6 @@ RUN uv sync --frozen
 
 EXPOSE 8080
 
+ENV PROJECT_ID="qwiklabs-gcp-03-dc7a7339d1a3"
+
 CMD ["uv", "run", "uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8080"]
