@@ -49,7 +49,7 @@ def setup_page() -> None:
 
 
 def initialize_session_state() -> None:
-    """Initialize the session state with default values."""
+    """Initialize the session state with default values. hello"""
     if "user_chats" not in st.session_state:
         st.session_state["session_id"] = str(uuid.uuid4())
         st.session_state.uploader_key = 0
