@@ -31,6 +31,13 @@ from typing import Union, Dict, Any
 import json
 from langchain_core.messages.base import BaseMessage
 from langchain_core.tools import tool
+from app.prompt_manager import PromptManager 
+from langgraph.types import Command, interrupt
+from langchain.agents import AgentExecutor, create_react_agent
+from typing_extensions import TypedDict, Literal
+
+
+
 # import mlflow
 
 
@@ -122,74 +129,132 @@ from typing_extensions import TypedDict
 
 
 class AgentState(TypedDict):
-    user_input: str
+    user_input: Optional[str]
     campaign_brief: Optional[str]
     sql_query: Optional[str]
     sql_query_error: Optional[bool]
     query_result_json: Optional[str]
     stats: Optional[Any]  # modifier noms query_result_stats
     preview: Optional[Any]
-    evaluation_result: Optional[Any]
+    evaluation_result: Any
     adjust: Optional[Any]
+    schema_metadata: Optional[Any]
+    project_id: Optional[str]
     messages: Annotated[list, add_messages]
+    user_feedback: str
 
 class CampaignWorkflow:
-    def __init__(self, model, schema_metadata, project_id ):
+    def __init__(self, model, hitl, schema_metadata, project_id, system=""):
         self.schema_metadata = schema_metadata
         self.project_id = project_id
+        self.system = system
         self.cpt_loop = 0
         self.limit_loop = 3
-
+        self.hitl=hitl #human in the loop
         # Graph
+        self.prompt_manager = PromptManager()
         graph = StateGraph(AgentState)
-
-        
+        graph.add_node("routeur", self.routeur)
         graph.add_node("generate_campaign_strategy", self.generate_campaign_strategy)
         graph.add_node("build_query", self.build_query)
         graph.add_node("execute_query", self.execute_query)
         graph.add_node("evaluate_target", self.evaluate_target)
         graph.add_node("adjust_query", self.adjust_query)
         graph.add_node("final_answer", self.final_answer)
+
         graph.add_edge("generate_campaign_strategy", "build_query")
         graph.add_edge("build_query", "execute_query")
         graph.add_edge("final_answer", END)
-
-        # graph.add_node("router", self.router)
-        # graph.add_conditional_edges("router", self.redo_campaign_strategy
-        #     ,{True : "generate_campaign_strategy", False :END})
-
-        # graph.add_conditional_edges("router", self.redo_adjust_strategy
-        #     ,{True : "adjust_strategy", False :END})
-
+        
         graph.add_conditional_edges(
             "execute_query",
             self.should_adjust_query_error,
             {0: "adjust_query", 1: "evaluate_target", 2: "final_answer"},
         )
         graph.add_conditional_edges(
-            "evaluate_target", self.should_adjust, {True: "adjust_query", False: "final_answer"}
+            "evaluate_target",
+            self.should_adjust,
+            {True: "adjust_query", False: "final_answer"},
         )
 
         graph.add_edge("adjust_query", "execute_query")
-        graph.set_entry_point("generate_campaign_strategy")
+        # graph.set_entry_point("generate_campaign_strategy")
+        graph.set_entry_point("routeur")
+
         memory = MemorySaver()
         self.graph = graph.compile()
         self.model = model
 
+    def execute_sql_query(query: str) -> str:
+        """Exécute une requête SQL et retourne les résultats."""
+        try:
+            query_result_df = pd.read_gbq(query, project_id="mon-projet-gcp")
+            return query_result_df.head(5).to_json(orient="records", indent=2)
+        except Exception as e:
+            return f"Erreur lors de l'exécution : {str(e)}"
+    def routeur(
+        self, state: AgentState
+    ) -> Command[Literal["generate_campaign_strategy","final_answer"]]:
+        class User_Intent(BaseModel):
+            ambiguity: bool = Field(
+                description="Indicates whether the input is ambiguous and requires clarification."
+            )
+            response_ambiguity: str = Field(
+                description="If ambiguity True, provide a reasoning explaining why it's ambiguous, emphasizing that the goal is to determine an audience based on a marketing campaign."
+            )
+            generate_brief: bool = Field(
+                description="Indicates whether a new campaign brief should be generated based on the user's input."
+            )
+            # build_query: bool = Field(
+            #     description="Indicates whether the query should be built from scratch based on user input."
+            # )
+            # adjust_query: bool = Field(
+            #     description="Indicates whether the existing query should be adjusted based on refined criteria."
+            # )
+
+
+        user_input = state["messages"][-1] if type(state["messages"][-1]) is HumanMessage else None
+        print(user_input)
+        system_prompt = self.prompt_manager.routeur_prompt()
+        template = ChatPromptTemplate(
+            [
+                ("placeholder", "{messages}"),
+                ("system", system_prompt),
+            ]
+        )
+        
+        structured_chain = template | self.model.with_structured_output(User_Intent)
+        llm_output = structured_chain.invoke(
+            {"messages": state["messages"], "user_input": user_input}
+        )
+        print(llm_output)
+        if llm_output.ambiguity:
+            state["messages"] = AIMessage(
+                content=llm_output.response_ambiguity, name="Routeur_Agent")
+            goto = "final_answer"
+        else: 
+            goto = "generate_campaign_strategy"
+        
+        # elif llm_output.build_query:
+        #     goto = "build_query"
+        # elif llm_output.adjust_query:
+        #     goto = "adjust_query"
+        return Command(
+            update={"messages": state["messages"], "user_input": user_input},
+            goto=goto,
+        )
+
     def should_adjust(self, state: AgentState):
         return (
-            state["evaluation_result"].should_adjust
-            and self.cpt_loop < self.limit_loop
+            state["evaluation_result"].should_adjust and self.cpt_loop < self.limit_loop
         )
 
     def should_adjust_query_error(self, state: AgentState):
         if self.cpt_loop >= self.limit_loop:
             return 2
-        elif state["sql_query_error"]==True:
-            print("return 0")
+        elif state["sql_query_error"] == True:
             return 0
         else:
-            print("return 1")
             return 1
 
     def generate_campaign_strategy(self, state: AgentState):
@@ -198,29 +263,9 @@ class CampaignWorkflow:
                 description="A well-structured and precise campaign request in natural language."
             )
 
-
         user_input = state["messages"][-1] if type(state["messages"][-1]) is HumanMessage else None
-
-        system_prompt = """You are a marketing campaign strategist for an e-commerce site.  
-    Your task is to generate a **clear and precise brief** to define an audience for a targeted campaign.  
-
-    ### Guidelines:
-    - **Focus Only on Targeting**: If the request is not related to audience segmentation, inform the user that this is outside the scope.
-    - **Ensure Coherence with the Dataset**: Base the brief on the structure and logic of the following schema metadata.
-    - The primary objective is to retrieve `user_id`, along with any other relevant columns specified by the user request 
-    Don't hesitate to use data from all the available tables
-
-
-    Use the provided table information and schema to ensure the campaign brief is based on real data.
-    ### Metadata Structure: 
-    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
-    - Tables in the dataset are identified by the `table_id` field.
-    - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
-    The provided schema metadata is as follows:
-    {schema_metadata}
-    ### Clarity & Precision:
-    The generated brief should be well-structured and explicitly define the targeted audience based on the dataset schema and the user input.    """
-
+        system_prompt = self.prompt_manager.generate_campaign_strategy_prompt()
+        
         template = ChatPromptTemplate(
             [
                 ("placeholder", "{messages}"),
@@ -228,52 +273,21 @@ class CampaignWorkflow:
             ]
         )
 
-       
-        structured_chain = template | self.model.with_structured_output(CampaignBrief) 
+        structured_chain = template | self.model.with_structured_output(CampaignBrief)
         llm_output = structured_chain.invoke(
             {"messages": state["messages"], "schema_metadata": self.schema_metadata}
         )
         ai_message = AIMessage(
             content=format_model_or_dict(llm_output), name="Brief_Agent"
         )
-        
-        return {"campaign_brief": llm_output, "messages": [ai_message],"user_input":user_input}
+
+        return {"campaign_brief": llm_output, "messages": [ai_message], "user_input": user_input}
 
     def build_query(self, state: AgentState):
         class SQLQueryOutput(BaseModel):
             sql_query: str
 
-        system_prompt = """You are a BigQuery SQL expert specialized in marketing analytics. Given a marketing campaign brief and an initial user request, your task is to generate a valid SQL query that specifically targets and extracts the right profiles for the marketing campaign.
-
-        **Instructions:**
-
-        - Use the provided schema metadata to determine the appropriate column types before constructing conditions.
-        - Retrieve `user_id` and other relevant columns specified by the user request.
-        - Ensure the query filters and extracts user profiles based on the criteria relevant to the campaign. The goal is to identify users who match the target audience.
-        - If a column has predefined categorical values (e.g., an enumeration or a fixed set of possible values), ensure that user input is correctly mapped to the corresponding stored values before applying filters.
-        - Wrap each column name in backticks (`) to denote them as delimited identifiers.
-        - Select only the necessary columns based on the user request; never use `SELECT *`.
-        - Always include `user_id` in the selected columns. 
-        - Ensure that column values used in conditions match the actual data format.
-        - When applying filters on columns with categorical values , ensure that the user input values are correctly mapped to the stored values in the table name (for example, 'f' for 'female' and 'm' for 'male'), based on the structure and data of the columns.
-        - When filtering by geographic location, always ensure that both `user_country` and `user_state` (if applicable) are used to correctly filter users from the intended countries.
-        - The campaign brief should be strictly followed to ensure only the relevant audience is targeted.
-        - When the brief mention a limit or a size of n for the population to be targetted, use LIMIT n and force a randomization by adding an order by clause with rand, like this example
-             SELECT
-              id AS user_id,
-            FROM `thelook_ecommerce.users`
-            WHERE gender = 'M'
-            ORDER BY RAND()
-            LIMIT 100;
-    Don't hesitate to use subqueries (fetching data from all the available tables) 
-    to ensure the brief and user input are properly respected.
-      ### Metadata Structure: 
-        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
-        - Tables in the dataset are identified by the `table_id` field.
-        - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
-        The provided schema metadata is as follows:
-        {schema_metadata}
-        """
+        system_prompt = self.prompt_manager.build_query_prompt()
 
         template = ChatPromptTemplate(
             [
@@ -285,15 +299,17 @@ class CampaignWorkflow:
         structured_chain = template | self.model.with_structured_output(SQLQueryOutput)
 
         llm_output = structured_chain.invoke(
-            {"messages": state["messages"], "schema_metadata": self.schema_metadata}
+            {"messages": state["messages"], "schema_metadata":self.schema_metadata}
         )
+
         ai_message = AIMessage(
             content=format_model_or_dict(llm_output), name="Sql_Query_Builder_Agent"
         )
-        
+
         return {"sql_query": llm_output, "messages": [ai_message]}
 
     def execute_query(self, state: AgentState):
+        from langchain.schema import ChatMessage
 
         class EvaluationResult(BaseModel):
             should_adjust: bool = Field(
@@ -302,8 +318,10 @@ class CampaignWorkflow:
             reasoning: str = Field(
                 description="Agent's reasoning explaining the evaluation"
             )
-
-        sql_query = state["sql_query"].sql_query
+        if isinstance(state["sql_query"], str):
+            sql_query = state["sql_query"]
+        else:
+            sql_query = state["sql_query"].sql_query  
         try:
             query_result_df = pd.read_gbq(
                 sql_query,
@@ -333,18 +351,7 @@ class CampaignWorkflow:
                     ),
                 }
             )
-            tool_dict_message = {
-                    "name": "tool",
-                    "args": 
-                        {
-                            "executed_query": sql_query,
-                            "stats": stats,
-                            "preview": query_result_df.head(5).to_json(
-                                orient="records", indent=2
-                            ),
-                        }
-                    ,
-                }
+
         except Exception as e:
             error_message = str(e)
             print(f"Erreur attrapée : {error_message}")
@@ -358,19 +365,16 @@ class CampaignWorkflow:
             stats = None
             preview = None
 
-            
-            tool_dict_message = {
-                "name": "Error",
-                "args": {
-                    "executed_query": sql_query,
-                    "error": error_message
-                }
-            }
-            tool_message = format_model_or_dict(tool_dict_message)
+            tool_message = format_model_or_dict(
+                {"role": "Error", "executed_query": sql_query, "error": error_message}
+            )
+
+        tool_message = AIMessage(
+            content=tool_message, name="tool_call"
+        )
 
         return {
             "messages": [tool_message],
-            "tool_dict_message": tool_dict_message,
             "sql_query_error": sql_query_error,
             "query_result_json": query_result_json,
             "evaluation_result": evaluation_result,
@@ -386,28 +390,14 @@ class CampaignWorkflow:
             reasoning: str = Field(
                 description="Agent's reasoning explaining the evaluation"
             )
-        query_result_df = pd.read_json(state["query_result_json"], orient="records")
-        system_prompt = """You are an expert in evaluating marketing campaigns for an e-commerce site.  
-        Your role is to determine whether an SQL query correctly extracts the intended audience.
 
-        ### Guidelines:
-        - Analyze the SQL query logic.
-        - Examine the provided result statistics and first rows of data.
-        - Compare the extracted audience with the expected audience from the campaign brief and user input.
-        - Use the provided schema metadata to determine the appropriate column types and relationships.
-        - If incorrect, explain why and provide a clear reasoning.
-        - While evaluating, ensure that user_id is correctly retrieved, as it is the primary information we need to extract.
-        ### Metadata Structure: 
-        - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
-        - Tables in the dataset are identified by the `table_id` field.
-        - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
-        The provided schema metadata is as follows:
-        {schema_metadata}
-     """
+        query_result_df = pd.read_json(state["query_result_json"], orient="records")
+        system_prompt = self.prompt_manager.evaluate_target_prompt()
+
         template = ChatPromptTemplate(
             [
                 ("placeholder", "{messages}"),
-                ("system",system_prompt),
+                ("system", system_prompt),
             ]
         )
 
@@ -420,85 +410,103 @@ class CampaignWorkflow:
         )
 
         ai_message = AIMessage(
-            content=format_model_or_dict(llm_output)
-            , name="Evaluator_Agent"
+            content=format_model_or_dict(llm_output), name="Evaluator_Agent"
         )
 
         return {"evaluation_result": llm_output, "messages": [ai_message]}
+    
+    @tool
+    def human_assistance(query: str) -> str:
+        """Request assistance from a human."""
+        human_response = interrupt({"query": query})
+        return human_response["data"]
+    
+    @tool 
+    def adjust_format(query: str):
+        """
+        Adjusts and improves the format of the provided SQL query.
 
-    def adjust_query(self, state: AgentState):
+        Parameters:
+        ----------
+        query : str
+            The SQL query to be corrected and reformatted.
+
+        Returns:
+        -------
+        AdjustedQuery :
+            An object containing the corrected and improved SQL query.
+        """
         class AdjustedQuery(BaseModel):
             sql_query: str = Field(
                 description="The corrected SQL query after applying the suggested improvements."
             )
 
+        return AdjustedQuery(sql_query=query) 
+    def adjust_query(self, state: AgentState):
+        class AdjustedQuery(BaseModel):
+            sql_query: str = Field(
+                description="The corrected SQL query after applying the suggested improvements."
+            )
+            reasoning: str = Field(
+                description="Agent's reasoning explaining the adjusted query"
+            )
+
         self.cpt_loop += 1
-        print("self.cpt_loop", self.cpt_loop)
-        system_prompt = """You are an expert SQL optimizer for marketing campaigns on an e-commerce site.  
-    Your role is to correct and improve SQL queries to ensure they properly filter and extract the intended audience.
+        if self.hitl: 
+            system_prompt = self.prompt_manager.adjust_query_prompt_hitl()
+            template = ChatPromptTemplate(
+                [
+                    ("placeholder", "{messages}"),
+                    ("user", system_prompt),
+                ]
+            )
 
-    ### Guidelines:
-    - Analyze the given SQL query and identify potential issues.
-    - Use the provided reasoning to understand why the query may be incorrect or suboptimal.
-    - Apply necessary corrections while ensuring logical accuracy and efficiency.
-    - Optimize the query for precision, avoiding unnecessary null values or misinterpretations.
-    - Ensure the corrected query aligns with the expected audience criteria.
-    - While adjusting the query, ensure that user_id is correctly retrieved, as it is a must have
-    - Include other informations about the users that are relevant based on the context (user input, brief etc.)
-    ### Metadata Structure: 
-    - The tables are qualified with a dataset (e.g., dataset.table). In this case, the dataset is named "thelook_ecommerce".
-    - Tables in the dataset are identified by the `table_id` field.
-    - Each table has a `schema` field listing its columns, including `name`, `type`, `key`, and potential relationships.
-    The provided schema metadata is as follows:
-    {schema_metadata}
+            tools=[self.human_assistance, self.adjust_format]
+            agent = create_react_agent(self.model, tools, template)
 
-    """
-        template = ChatPromptTemplate(
-            [
-                ("placeholder", "{messages}"),
-                ("user",system_prompt),
-            ]
-        )
+            agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True,handle_parsing_errors=True,max_iterations=5,return_intermediate_steps=True)
 
-        structured_chain = template | self.model.with_structured_output(AdjustedQuery)
+            llm_output=agent_executor.invoke({"messages": state["messages"], "schema_metadata": self.schema_metadata
+             })
+            print("SQL Query Adjusted",llm_output[list(llm_output.keys())[-1]][-1][1])
+            return {
+                 "sql_query": llm_output[list(llm_output.keys())[-1]][-1][1]}
+        else : 
+            system_prompt = self.prompt_manager.adjust_query_prompt()
+            template = ChatPromptTemplate([("placeholder", "{messages}"),("user", system_prompt),])
+            structured_chain = template | self.model.with_structured_output(AdjustedQuery)
+            llm_output = structured_chain.invoke({"messages": state["messages"], "schema_metadata": self.schema_metadata})
+            ai_message = AIMessage(
+                content=format_model_or_dict(llm_output), name="Adjuster_Agent"
+            )
+            return {"sql_query": llm_output,"messages": [ai_message],}
 
-        llm_output = structured_chain.invoke(
-            {"messages": state["messages"], "schema_metadata": self.schema_metadata}
-        )
-
-        ai_message = AIMessage(
-            content=format_model_or_dict(llm_output), name="Adjuster_Agent"
-        )
-        return {
-            "sql_query": llm_output,
-            "messages": [ai_message],
-        }
 
     def final_answer(self, state: AgentState):
-        # class FinalResponse(BaseModel):
-        #     response: str = Field(
-        #         description="The final response generated based on the results of previous executions."
-        #     )
-    #     system_prompt ="""Summarize everything that has been done in the previous executions of the workflow and generate a final, 
-    #     clear response for the user. 
-    # """
-        system_prompt="""Based on the user input {user_input} and the results in the messages, 
-        provide a final response to the user """
+        system_prompt = self.prompt_manager.final_answer_prompt()
         template = ChatPromptTemplate(
             [
                 ("placeholder", "{messages}"),
                 ("user", system_prompt),
             ]
-        ) 
+        )
+
+        if "evaluation_result" in state:
+            evaluation_result = state["evaluation_result"]
+        else:
+            evaluation_result = "No evaluation result." 
+
         structured_chain = template | self.model
         llm_output = structured_chain.invoke(
-            {"messages": state["messages"],"user_input":state["user_input"]}
+            {
+                "messages": state["messages"],
+                "user_input": state["user_input"],
+                "last_evaluation": evaluation_result,
+            }
         )
-        # ai_message = AIMessage(
-        #     content=llm_output, name="Final Answer"
-        # )
+        print(llm_output)
         self.cpt_loop = 0
-        return { "messages":[llm_output] }
+        return {"messages": [llm_output]}
 
 
 
@@ -520,13 +528,13 @@ with open(
     description = fichier.read()
 
 
-#metadata = f"{metadata_str} | {description}"
-metadata = f"{description}"
+metadata = f"{metadata_str} | {description}"
+# metadata = f"{description}"
 
 
 llm = ChatVertexAI(model="gemini-2.0-flash-001", temperature=0)
 
 
-Campaign_Workflow = CampaignWorkflow(model=llm,project_id=PROJECT_ID,schema_metadata=metadata)
+Campaign_Workflow = CampaignWorkflow(model=llm,hitl=False,project_id=PROJECT_ID,schema_metadata=metadata)
 
 agent = Campaign_Workflow.graph

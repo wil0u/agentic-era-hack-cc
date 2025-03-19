@@ -22,6 +22,8 @@ dependencies = [
     "uvicorn~=0.34.0",
     "pandas-gbq",
     "tabulate",
+    "pandas",
+    "streamlit-modal",
 ]
 
 requires-python = ">=3.10,<3.14"

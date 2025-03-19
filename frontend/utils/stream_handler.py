@@ -29,7 +29,6 @@ import vertexai
 from google.auth.exceptions import DefaultCredentialsError
 from langchain_core.messages import AIMessage, ToolMessage
 from vertexai.preview import reasoning_engines
-
 from frontend.utils.multimodal_utils import format_content
 
 st.cache_resource.clear()
@@ -178,7 +177,7 @@ class StreamHandler:
     def __init__(self, st: Any, initial_text: str = "") -> None:
         """Initialize the StreamHandler with Streamlit context and initial text."""
         self.st = st
-        self.tool_expander = st.expander("Tool Calls:", expanded=False)
+        self.tool_expander = st.expander("Intermediate Steps: ", expanded=False)
         self.container = st.empty()
         self.text = initial_text
         self.tools_logs = initial_text
@@ -194,6 +193,7 @@ class StreamHandler:
         self.tool_expander.markdown(status_update)
 
 
+
 class EventProcessor:
     """Processes events from the stream and updates the UI accordingly."""
 
@@ -204,15 +204,25 @@ class EventProcessor:
         self.stream_handler = stream_handler
         self.final_content = ""
         self.tool_calls: list[dict[str, Any]] = []
+        self.intermediate_steps: List[Dict[str, Any]] = []
         self.current_run_id: str | None = None
         self.additional_kwargs: dict[str, Any] = {}
 
+    def extract_text(self, content):
+        """Extrait le texte d'un contenu structuré ou retourne une chaîne avec un indicateur."""
+        if isinstance(content, list):  
+            for item in content:
+                if isinstance(item, dict) and "type" in item and "text" in item:
+                    return item["text"]  # Retourne le texte trouvé
+        return f"{str(content)}"  # Retourne la chaîne brute avec un indicateur
+
     def process_events(self) -> None:
-        """Process events from the stream, handling each event type appropriately."""
+        """Process events from the stream and update the UI accordingly."""
         messages = self.st.session_state.user_chats[
             self.st.session_state["session_id"]
         ]["messages"]
         self.current_run_id = str(uuid.uuid4())
+
         # Set run_id in session state at start of processing
         self.st.session_state["run_id"] = self.current_run_id
         stream = self.client.stream_messages(
@@ -227,39 +237,59 @@ class EventProcessor:
                 },
             }
         )
-        # Each event is a tuple message, metadata. https://langchain-ai.github.io/langgraph/how-tos/streaming/#messages
-        for message, _ in stream:
-            if isinstance(message, dict):
-                if message.get("type") == "constructor":
-                    message = message["kwargs"]
 
-                    # Handle tool calls
-                    if message.get("tool_calls"):
-                        tool_calls = message["tool_calls"]
-                        ai_message = AIMessage(content="", tool_calls=tool_calls)
-                        self.tool_calls.append(ai_message.model_dump())
-                        for tool_call in tool_calls:
-                            msg = f"\n\nCalling tool: `{tool_call['name']}` with args: `{tool_call['args']}`"
+        # Process streaming messages
+        for value in stream:
+            if isinstance(value, dict):
+                message = value["messages"][-1]
+                print("raw message:", message)
+
+                if message.get("type") == "constructor":
+                    kwargs = message.get("kwargs", {})
+                    message_type = kwargs.get("type", "")
+                    if message_type != "human":
+                        name = kwargs.get("name", "Unknown_Agent")  # Récupérer dynamiquement le nom
+                        formatted_content = ""
+                        # Si le message a un nom, on applique un formatage spécial
+                        if "content" in kwargs and name != "Unknown_Agent":
+                            content = kwargs["content"]
+                            intermediate_step_content = f"\n📝 **{name} Response:**\n```\n{content}\n```"
+                            self.intermediate_steps.append(intermediate_step_content)
+                            self.stream_handler.new_status(intermediate_step_content)
+                        else:
+                            formatted_content = self.extract_text(kwargs.get("content", ""))
+
+                        # Handle tool calls
+                        if kwargs.get("tool_calls"):
+                            tool_calls = kwargs["tool_calls"]
+                            ai_message = AIMessage(content="", tool_calls=tool_calls)
+                            self.tool_calls.append(ai_message.model_dump())
+                            for tool_call in tool_calls:
+                                msg = f"\n\nCalling tool: `{tool_call['name']}` with args: `{tool_call['args']}`"
+                                self.stream_handler.new_status(msg)
+
+                        # Handle tool responses
+                        elif kwargs.get("tool_call_id"):
+                            content = kwargs["content"]
+                            tool_call_id = kwargs["tool_call_id"]
+                            tool_message = ToolMessage(
+                                content=content, type="tool", tool_call_id=tool_call_id
+                            ).model_dump()
+                            self.tool_calls.append(tool_message)
+                            msg = f"\n\nTool response: `{content}`"
                             self.stream_handler.new_status(msg)
 
-                    # Handle tool responses
-                    elif message.get("tool_call_id"):
-                        content = message["content"]
-                        tool_call_id = message["tool_call_id"]
-                        tool_message = ToolMessage(
-                            content=content, type="tool", tool_call_id=tool_call_id
-                        ).model_dump()
-                        self.tool_calls.append(tool_message)
-                        msg = f"\n\nTool response: `{content}`"
-                        self.stream_handler.new_status(msg)
-
-                    # Handle AI responses
-                    elif content := message.get("content"):
-                        self.final_content += content
-                        self.stream_handler.new_token(content)
-
+                        # Handle AI responses
+                        elif "content" in kwargs:
+                            self.final_content += formatted_content
+                            self.stream_handler.new_token(formatted_content)
+        if "query_result_json" in value:
+            current_audience = value['query_result_json']
+        else:
+            current_audience = ""
         # Handle end of stream
         if self.final_content:
+            self.additional_kwargs["intermediate_steps"] = self.intermediate_steps
             final_message = AIMessage(
                 content=self.final_content,
                 id=self.current_run_id,
@@ -271,6 +301,9 @@ class EventProcessor:
             )
             self.st.session_state.user_chats[session]["messages"].append(final_message)
             self.st.session_state.run_id = self.current_run_id
+            self.st.session_state.user_chats[session]["query_result_json"] = current_audience
+
+
 
 
 def get_chain_response(st: Any, client: Client, stream_handler: StreamHandler) -> None:

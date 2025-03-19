@@ -17,6 +17,8 @@ import json
 import os
 import uuid
 from typing import Any
+from streamlit_modal import Modal
+import pandas as pd
 
 from frontend.utils.chat_utils import save_chat
 from frontend.utils.multimodal_utils import (
@@ -167,6 +169,45 @@ class SideBar:
                         self.st.session_state.session_db.get_session(
                             session_id=self.st.session_state["session_id"],
                         )
+
+            self.st.divider()
+            session = self.st.session_state["session_id"]
+            if "query_result_json" in self.st.session_state.user_chats[session]:
+                query_result_json = self.st.session_state.user_chats[session]["query_result_json"]
+                try:
+                    # Try loading the JSON string
+                    json_data = json.loads(query_result_json)
+                    
+                    # Ensure it's a list of dictionaries or a dictionary of lists
+                    if isinstance(json_data, list) and all(isinstance(i, dict) for i in json_data):
+                        df = pd.DataFrame(json_data)  # Convert JSON list to DataFrame
+                    elif isinstance(json_data, dict):
+                        df = pd.DataFrame.from_dict(json_data)  # Convert dictionary to DataFrame
+                    else:
+                        raise ValueError("JSON format not suitable for DataFrame conversion")
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    print(f"Error: {e}")  # Print error message
+                    df = pd.DataFrame()
+                self.st.session_state.df = df
+            else:
+                self.st.warning("Audience is empty.")
+                self.st.session_state.df = None
+        
+            # Bouton pour afficher la modale
+            if self.st.button("Display audience"):
+                modal = Modal("Audience", key="modal_json")
+                with modal.container():
+                    self.st.dataframe(df)
+        
+            # Bouton d'exportation CSV
+            if "df" in self.st.session_state and self.st.session_state.df is not None:
+                csv = self.st.session_state.df.to_csv(index=False).encode('utf-8')
+                self.st.download_button(
+                    label="Exporter en CSV",
+                    data=csv,
+                    file_name="data.csv",
+                    mime="text/csv"
+                )
 
             self.st.divider()
             self.st.header("Upload files from local")

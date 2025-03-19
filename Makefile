@@ -7,7 +7,7 @@ test:
 
 playground:
 	uv run uvicorn app.server:app --host 0.0.0.0 --port 8000 --reload &
-	uv run streamlit run frontend/streamlit_app.py --brmak
+	uv run streamlit run frontend/streamlit_app.py --browser.serverAddress=localhost --server.enableCORS=false --server.enableXsrfProtection=false
 backend:
 	uv run uvicorn app.server:app --host 0.0.0.0 --port 8000 --reload
 

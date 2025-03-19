@@ -39,12 +39,12 @@ EMPTY_CHAT_NAME = "Empty chat"
 def setup_page() -> None:
     """Configure the Streamlit page settings."""
     st.set_page_config(
-        page_title="Playground",
+        page_title="Campaign Companion",
         layout="wide",
         initial_sidebar_state="auto",
         menu_items=None,
     )
-    st.title("Playground")
+    st.title("Campaign Companion")
     st.markdown(MARKDOWN_STR, unsafe_allow_html=True)
 
 
@@ -109,17 +109,10 @@ def display_chat_message(message: dict, index: int) -> None:
             with st.expander("Intermediate Steps"):
                 nb_steps = len(intermediate_steps)
                 for i, step in enumerate(intermediate_steps):
-                    try:
-                        structured_output = ast.literal_eval(step.get("structured_output", "{}"))
-                    except (SyntaxError, ValueError):
-                        structured_output = {}
-
-                    formatted_output = format_intermediate_step(structured_output)
-                    if formatted_output:
-                        st.markdown(f"###### Step {i+1}")
-                        st.markdown(formatted_output, unsafe_allow_html=True)
-                        if(i != nb_steps-1):
-                            st.divider() 
+                    st.markdown(f"###### Step {i+1}")
+                    st.markdown(step, unsafe_allow_html=True)
+                    if(i != nb_steps-1):
+                        st.divider() 
 
         # Affichage du message principal après les intermediate steps
         st.markdown(format_content(chat_message_content), unsafe_allow_html=True)

@@ -79,8 +79,7 @@ def stream_messages(
     config = ensure_valid_config(config=config)
     set_tracing_properties(config)
     input_dict = input.model_dump()
-
-    for data in agent.stream(input_dict, config=config, stream_mode="messages"):
+    for data in agent.stream(input_dict, config=config, stream_mode="values"):
         yield dumps(data) + "\n"
 
 
